@@ -10,12 +10,15 @@ using JetBrains.ReSharper.Psi.Tree;
 using JetBrains.ReSharper.Psi.Util;
 using JetBrains.Util;
 using JetBrains.Util.Special;
+using Serilog.Parsing;
 
 namespace Serilog.ReSharper
 {
     [ContainsContextConsumer]
     public class MessageTemplateContextHighlighter : ContextHighlighterBase
     {
+        private static readonly MessageTemplateParser TemplateParser = new MessageTemplateParser();
+
         [AsyncContextConsumer]
         public static Action ProcessContext(Lifetime lifetime, [ContextKey(typeof(CSharpContextActionDataProvider.ContextKey))] ICSharpContextActionDataProvider dataProvider, InvisibleBraceHintManager invisibleBraceHintManager, MatchingBraceSuggester matchingBraceSuggester)
         {
@@ -57,26 +60,30 @@ namespace Serilog.ReSharper
                 return;
             }
 
-            var formatString = matchingArguments.AggregateString((sb, expr) => sb.Append(expr.ConstantValue.Value));
+            var messageTemplateString = matchingArguments.AggregateString((sb, expr) => sb.Append(expr.ConstantValue.Value));
 
-            var formatItems = FormatStringParser.Parse(formatString).ToList();
+            var messageTemplate = TemplateParser.Parse(messageTemplateString);
 
-            var formatItem = GetFormatItem(
+            var tokens = messageTemplate.Tokens.ToList();
+
+            var token = GetMessageTemplateToken(
+                tokens,
                 matchingArguments,
-                formatItems,
                 dataProvider,
                 literalByExpression,
                 literalExpression);
 
-            if (formatItem == null)
+            if (token == null)
             {
                 return;
             }
 
+            var textRange = GetTextRange(token);
+
             foreach (var list in constantArguments)
             {
                 var documentRanges = StringLiteralAltererUtil
-                    .GetDocumentRangesByInnerRangeInExpressionSequence(list, formatItem.Range, false);
+                    .GetDocumentRangesByInnerRangeInExpressionSequence(list, textRange, false);
 
                 foreach (var range in documentRanges)
                 {
@@ -84,7 +91,7 @@ namespace Serilog.ReSharper
                 }
             }
 
-            var matchedFormatItemIndex = formatItems.IndexOf(formatItem);
+            var matchedFormatItemIndex = tokens.IndexOf(token);
 
             HighlightArgument(consumer, stringConcat, matchedFormatItemIndex);
         }
@@ -117,9 +124,9 @@ namespace Serilog.ReSharper
             consumer.ConsumeHighlighting("ReSharper Matched Format String Item", documentRange);
         }
 
-        private static FormatStringParser.FormatItem GetFormatItem(
+        private static MessageTemplateToken GetMessageTemplateToken(
+            IList<MessageTemplateToken> tokens,
             IList<IExpression> matchingArguments,
-            IList<FormatStringParser.FormatItem> formatItems,
             IContextActionDataProvider dataProvider,
             IStringLiteralAlterer literalByExpression,
             IExpression literalExpression)
@@ -132,14 +139,19 @@ namespace Serilog.ReSharper
 
             var isAtEndOfLiteral = valueOffset == ((string) literalByExpression.Expression.ConstantValue.Value).Length;
 
-            var formatItem = formatItems.FirstOrDefault(x => x.Range.TrimLeft(isAtEndOfLiteral ? 1 : 0).TrimRight(1).Contains(innerOffset));
+            var formatItem = tokens.FirstOrDefault(x => GetTextRange(x).TrimLeft(isAtEndOfLiteral ? 1 : 0).TrimRight(1).Contains(innerOffset));
 
             if (formatItem == null && valueOffset != 0)
             {
-                formatItem = formatItems.FirstOrDefault(x => x.Range.EndOffset == innerOffset);
+                formatItem = tokens.FirstOrDefault(x => GetTextRange(x).EndOffset == innerOffset);
             }
 
             return formatItem;
+        }
+
+        private static TextRange GetTextRange(MessageTemplateToken token)
+        {
+            return TextRange.FromLength(token.StartIndex, token.Length);
         }
     }
 }
